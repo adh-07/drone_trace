@@ -12,6 +12,7 @@ public class BluetoothDevice {
     private boolean connected;
     private Instant lastSeen;
     private String deviceType;
+    private int rssi; // Signal strength in dBm (-100 to 0)
 
     public BluetoothDevice(String deviceId, String deviceName, String address) {
         this.deviceId = deviceId;
@@ -49,6 +50,9 @@ public class BluetoothDevice {
 
     public String getDeviceType() { return deviceType; }
     public void setDeviceType(String deviceType) { this.deviceType = deviceType; }
+    
+    public int getRssi() { return rssi; }
+    public void setRssi(int rssi) { this.rssi = rssi; }
 }
 
 

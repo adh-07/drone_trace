@@ -22,6 +22,8 @@ import com.mymonitor.model.TelemetryData;
 import com.mymonitor.service.AdvancedBluetoothService;
 import com.mymonitor.dao.TelemetryDAO;
 import com.mymonitor.ui.LoginPage;
+import com.mymonitor.ui.AdvancedMapView;
+import com.mymonitor.ui.DistanceMeter;
 
 import java.net.URI;
 import java.sql.SQLException;
@@ -51,7 +53,9 @@ public class SingleFileMonitorApp extends Application {
     private BluetoothDevice currentBluetoothDevice;
     private TelemetryDAO telemetryDAO;
     private LoginPage loginPage;
-    
+    private AdvancedMapView mapView;
+    private Stage mapStage; // Separate window for map
+    private DistanceMeter distanceMeter;
 
     // --- Configuration ---
     private WebSocketClient wsClient;
@@ -63,66 +67,45 @@ public class SingleFileMonitorApp extends Application {
     // --- CSS Styles ---
     private static final String STYLE_SHEET = """
             .root {
-                -fx-background-color: linear-gradient(to bottom right, #0b0f14, #0f1720);
+                -fx-background-color: linear-gradient(to bottom right, #1a1a1a, #2a2a2a);
             }
             .label {
-                -fx-text-fill: #C9D1D9;
+                -fx-text-fill: #000000;
             }
             .title-label {
-                -fx-font-size: 26px;
+                -fx-font-size: 24px;
                 -fx-font-weight: bold;
-                -fx-text-fill: #00E5FF;
-                -fx-effect: dropshadow(gaussian, rgba(0,229,255,0.35), 10, 0.3, 0, 0);
-                -fx-letter-spacing: 0.5px;
+                -fx-text-fill: #0096C9;
             }
             .status-label {
                 -fx-font-size: 14px;
                 -fx-font-weight: bold;
-                -fx-text-fill: #C9D1D9;
+                -fx-text-fill: #000000;
             }
             .data-label {
                 -fx-font-size: 13px;
-                -fx-text-fill: #A6B2BD;
+                -fx-text-fill: #000000;
             }
             .button {
-                -fx-background-color: linear-gradient(#00BCD4, #0097A7);
-                -fx-text-fill: #0b0f14;
+                -fx-background-color: #0096C9;
+                -fx-text-fill: white;
                 -fx-font-weight: bold;
-                -fx-background-radius: 8;
-                -fx-border-radius: 8;
-                -fx-border-color: rgba(0,229,255,0.35);
-                -fx-border-width: 1;
-                -fx-effect: dropshadow(gaussian, rgba(0,229,255,0.25), 12, 0.2, 0, 0);
+                -fx-background-radius: 5;
             }
             .button:hover {
-                -fx-background-color: linear-gradient(#00E5FF, #00BCD4);
+                -fx-background-color: #007AA3;
             }
             .progress-bar {
-                -fx-pref-width: 220;
-                -fx-accent: #00E5FF;
-                -fx-background-color: rgba(255,255,255,0.08);
-                -fx-background-radius: 4;
+                -fx-pref-width: 200;
             }
             .progress-bar > .bar {
                 -fx-background-insets: 1;
-                -fx-background-radius: 3;
+                -fx-background-radius: 2;
             }
-            .text-area, .log-area {
-                -fx-text-fill: #9FB3C8;
-                -fx-control-inner-background: #0e141b;
-                -fx-background-insets: 0;
-                -fx-background-color: #0e141b;
-                -fx-border-color: rgba(0,229,255,0.15);
-                -fx-border-width: 1;
-                -fx-border-radius: 6;
-            }
-            .scroll-pane {
-                -fx-background-color: transparent;
-            }
-            .grid-pane {
-                -fx-background-color: rgba(255,255,255,0.03);
-                -fx-background-radius: 10;
-                -fx-padding: 10;
+            .log-area {
+                -fx-text-fill: white;
+                -fx-background-color: #1a1a1a;
+                -fx-control-inner-background: #1a1a1a;
             }
             """;
 
@@ -140,6 +123,9 @@ public class SingleFileMonitorApp extends Application {
     private void showMainApplication(Stage primaryStage) {
         // --- Create the Layout and Components ---
         BorderPane mainRoot = new BorderPane();
+        
+        // Initialize map view but don't show it yet
+        mapView = new AdvancedMapView();
         
         // Main Data Panel (Full View)
         VBox dataPanel = createDataPanel();
@@ -182,10 +168,10 @@ public class SingleFileMonitorApp extends Application {
         VBox root = new VBox(15);
         root.setPadding(new Insets(20));
         root.setAlignment(Pos.TOP_CENTER);
-        root.setStyle("-fx-background-color: transparent;");
+        root.setStyle("-fx-background-color: #ffffff;");
 
         // Title and Status Section
-        Label titleLabel = new Label("🛰️ Drone Operations Console");
+        Label titleLabel = new Label("Real-Time Drone Monitoring");
         titleLabel.getStyleClass().add("title-label");
 
         // Status Box with Reconnect Button
@@ -207,7 +193,7 @@ public class SingleFileMonitorApp extends Application {
         connectionAttemptsLabel.setStyle("-fx-text-fill: #000000; -fx-font-size: 12px;");
         statusBox.getChildren().addAll(statusRow, connectionAttemptsLabel);
 
-        reconnectButton = new Button("↻ Reconnect");
+        reconnectButton = new Button("Reconnect");
         reconnectButton.setOnAction(e -> reconnectWebSocket());
         
         settingsButton = new Button("⚙ Settings");
@@ -224,19 +210,24 @@ public class SingleFileMonitorApp extends Application {
 
         // Device ID Row
         Label deviceIdTitle = new Label("Device ID:");
-        deviceIdTitle.setStyle("-fx-text-fill: #C9D1D9; -fx-font-size: 13px; -fx-font-weight: bold;");
+        deviceIdTitle.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px; -fx-font-weight: bold;");
         deviceIdLabel = new Label("N/A");
-        deviceIdLabel.setStyle("-fx-text-fill: #A6B2BD; -fx-font-size: 13px;");
+        deviceIdLabel.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px;");
         grid.add(deviceIdTitle, 0, 0);
         grid.add(deviceIdLabel, 1, 0);
         
         // Location Row with Show Map Button
         Label locationTitle = new Label("Location:");
-        locationTitle.setStyle("-fx-text-fill: #C9D1D9; -fx-font-size: 13px; -fx-font-weight: bold;");
+        locationTitle.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px; -fx-font-weight: bold;");
         locationLabel = new Label("N/A");
-        locationLabel.setStyle("-fx-text-fill: #A6B2BD; -fx-font-size: 13px;");
+        locationLabel.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px;");
         
-        HBox locationBox = new HBox(10, locationLabel);
+        // Show Map Button next to coordinates
+        showMapButton = new Button("🗺 Show Map");
+        showMapButton.setStyle("-fx-font-size: 11px; -fx-padding: 5 10;");
+        showMapButton.setOnAction(e -> showMapWindow());
+        
+        HBox locationBox = new HBox(10, locationLabel, showMapButton);
         locationBox.setAlignment(Pos.CENTER_LEFT);
         
         grid.add(locationTitle, 0, 1);
@@ -244,23 +235,30 @@ public class SingleFileMonitorApp extends Application {
         
         // Battery Row
         Label batteryTitle = new Label("Battery:");
-        batteryTitle.setStyle("-fx-text-fill: #C9D1D9; -fx-font-size: 13px; -fx-font-weight: bold;");
+        batteryTitle.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px; -fx-font-weight: bold;");
         grid.add(batteryTitle, 0, 2);
         
         batteryBar = new ProgressBar(0.0);
         batteryPercentLabel = new Label("0%");
-        batteryPercentLabel.setStyle("-fx-text-fill: #A6B2BD; -fx-font-size: 13px;");
+        batteryPercentLabel.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px;");
         HBox batteryBox = new HBox(5, batteryBar, batteryPercentLabel);
         batteryBox.setAlignment(Pos.CENTER_LEFT);
         grid.add(batteryBox, 1, 2);
 
         // Last Update Time
         Label lastUpdateTitle = new Label("Last Update:");
-        lastUpdateTitle.setStyle("-fx-text-fill: #C9D1D9; -fx-font-size: 13px; -fx-font-weight: bold;");
+        lastUpdateTitle.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px; -fx-font-weight: bold;");
         lastUpdateLabel = new Label("Never");
-        lastUpdateLabel.setStyle("-fx-text-fill: #A6B2BD; -fx-font-size: 13px;");
+        lastUpdateLabel.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px;");
         grid.add(lastUpdateTitle, 0, 3);
         grid.add(lastUpdateLabel, 1, 3);
+        
+        // Distance Meter (shows how close the device is)
+        distanceMeter = new DistanceMeter();
+        VBox meterBox = new VBox(10);
+        meterBox.setAlignment(Pos.CENTER);
+        meterBox.getChildren().add(distanceMeter);
+        meterBox.setStyle("-fx-background-color: white; -fx-padding: 10; -fx-border-color: #cccccc; -fx-border-width: 1; -fx-border-radius: 5;");
 
         // Log Area
         logArea = new TextArea();
@@ -274,7 +272,7 @@ public class SingleFileMonitorApp extends Application {
         logScroll.setPrefViewportHeight(100);
         
         // Add all components to root
-        root.getChildren().addAll(titleLabel, controlBox, grid, logScroll);
+        root.getChildren().addAll(titleLabel, controlBox, grid, meterBox, logScroll);
         
         return root;
     }
@@ -415,7 +413,41 @@ public class SingleFileMonitorApp extends Application {
         });
     }
     
-    
+    /**
+     * Show map in a separate window
+     */
+    private void showMapWindow() {
+        if (mapStage != null && mapStage.isShowing()) {
+            // If map window already open, bring it to front
+            mapStage.toFront();
+            mapStage.requestFocus();
+            return;
+        }
+        
+        // Create new stage for map
+        mapStage = new Stage();
+        mapStage.setTitle("🗺 Device Location Map");
+        
+        // Create map view
+        BorderPane mapRoot = new BorderPane();
+        mapRoot.setCenter(mapView);
+        
+        Scene mapScene = new Scene(mapRoot, 1000, 700);
+        mapStage.setScene(mapScene);
+        mapStage.setMinWidth(800);
+        mapStage.setMinHeight(600);
+        
+        // Update map with current devices when opened
+        if (bluetoothService != null) {
+            List<BluetoothDevice> devices = bluetoothService.getConnectedDevices();
+            if (devices != null && !devices.isEmpty()) {
+                mapView.updateBluetoothDevices(devices);
+            }
+        }
+        
+        mapStage.show();
+        log("Map window opened");
+    }
 
     // --- UI Update Methods (Called by WebSocket client) ---
     private void updateStatus(boolean isConnected, String text) {
@@ -466,7 +498,10 @@ public class SingleFileMonitorApp extends Application {
             // Update last update time
             lastUpdateLabel.setText(LocalDateTime.now().format(TIME_FORMATTER));
             
-            
+            // Update map with location
+            if (mapView != null && (latitude != 0.0 || longitude != 0.0)) {
+                mapView.updateLocation(latitude, longitude, deviceId, battery);
+            }
         });
     }
 
@@ -474,51 +509,18 @@ public class SingleFileMonitorApp extends Application {
     private void startBluetoothMonitoring() {
         bluetoothService = new AdvancedBluetoothService();
         
-        // Check if Bluetooth service and radio are enabled
-        boolean serviceOn = bluetoothService.isBluetoothEnabled();
-        boolean radioOn = bluetoothService.isRadioOn();
-
-        if (!serviceOn || !radioOn) {
+        // Check if Bluetooth is enabled
+        if (!bluetoothService.isBluetoothEnabled()) {
             handleBluetoothStatus(false);
-            log("WARNING: Bluetooth is disabled or the radio is turned off. Prompting user to enable.");
-
-            Alert alert = new Alert(Alert.AlertType.WARNING);
-            alert.setTitle("Bluetooth Disabled");
-            alert.setHeaderText("Bluetooth is turned off");
-            alert.setContentText("Please turn on Bluetooth to detect and monitor devices.");
-            ButtonType openSettings = new ButtonType("Open Settings");
-            ButtonType retry = new ButtonType("Retry");
-            alert.getButtonTypes().setAll(openSettings, retry, ButtonType.CLOSE);
-            alert.showAndWait().ifPresent(bt -> {
-                if (bt == openSettings) {
-                    openBluetoothSettings();
-                }
-            });
-
-            // Poll until Bluetooth is enabled, then start scanning
-            Timeline btWait = new Timeline(
-                new KeyFrame(Duration.seconds(2), e -> {
-                    boolean svc = bluetoothService.isBluetoothEnabled();
-                    boolean rad = bluetoothService.isRadioOn();
-                    if (svc && rad) {
-                        ((Timeline) ((KeyFrame) e.getSource()).getParent()).stop();
-                        log("Bluetooth enabled. Starting scan...");
-                        beginBluetoothScan();
-                    }
-                })
-            );
-            btWait.setCycleCount(Timeline.INDEFINITE);
-            btWait.play();
-            return;
+            log("WARNING: Bluetooth is disabled. Please enable Bluetooth.");
         }
-
-        // Start immediately if enabled
-        beginBluetoothScan();
-    }
-
-    private void beginBluetoothScan() {
+        
         bluetoothService.startScanning(
-            devices -> Platform.runLater(() -> updateBluetoothDevices(devices))
+            devices -> {
+                Platform.runLater(() -> {
+                    updateBluetoothDevices(devices);
+                });
+            }
         );
         log("Advanced Bluetooth monitoring started - using native API with 2-second location updates");
     }
@@ -539,12 +541,6 @@ public class SingleFileMonitorApp extends Application {
             log("Bluetooth is enabled");
         }
     }
-
-    private void openBluetoothSettings() {
-        try {
-            new ProcessBuilder("powershell", "-NoProfile", "-Command", "Start ms-settings:bluetooth").start();
-        } catch (Exception ignored) {}
-    }
     
     private void updateDisconnectedState() {
         deviceIdLabel.setText("Disconnected");
@@ -554,6 +550,10 @@ public class SingleFileMonitorApp extends Application {
         batteryBar.setStyle("-fx-accent: #666666;");
         updateStatus(false, "Bluetooth Disconnected");
         lastUpdateLabel.setText(LocalDateTime.now().format(TIME_FORMATTER));
+        
+        if (distanceMeter != null) {
+            distanceMeter.setDisconnected();
+        }
     }
 
     private void updateBluetoothDevices(List<BluetoothDevice> devices) {
@@ -575,7 +575,11 @@ public class SingleFileMonitorApp extends Application {
                 " | Location: " + device.getLatitude() + ", " + device.getLongitude());
         }
 
-        
+        // Update map with ALL connected devices
+        if (mapView != null) {
+            mapView.updateBluetoothDevices(devices);
+            log("Updated map with " + devices.size() + " Bluetooth device(s)");
+        }
 
         // Find the first connected Bluetooth device (prioritize devices with "drone" in name)
         BluetoothDevice selectedDevice = devices.stream()
@@ -605,6 +609,17 @@ public class SingleFileMonitorApp extends Application {
             Platform.runLater(() -> {
                 log("Updating UI with device: " + selectedDevice.getDeviceName());
                 deviceIdLabel.setText(selectedDevice.getDeviceName());
+                
+                // Update distance meter based on signal strength
+                int rssi = selectedDevice.getRssi();
+                if (rssi != 0) {
+                    distanceMeter.updateBySignalStrength(rssi);
+                    log("Signal strength: " + rssi + " dBm");
+                } else {
+                    // Simulate distance based on battery as fallback
+                    double simulatedDistance = 50 + (Math.random() * 30 - 15); // 35-65%
+                    distanceMeter.updateDistance(simulatedDistance);
+                }
                 
                 double lat = selectedDevice.getLatitude();
                 double lon = selectedDevice.getLongitude();

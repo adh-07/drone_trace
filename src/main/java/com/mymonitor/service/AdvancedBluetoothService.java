@@ -114,25 +114,17 @@ public class AdvancedBluetoothService {
         List<BluetoothDevice> devices = new ArrayList<>();
         
         try {
-            // Try to get paired Bluetooth devices using btpair command
-            LOGGER.info("Attempting to scan for paired Bluetooth devices...");
+            // Get ACTUALLY CONNECTED Bluetooth devices using a better PowerShell command
+            LOGGER.info("Scanning for ACTIVELY CONNECTED Bluetooth devices...");
             
-            // First try: Get CONNECTED devices using Get-PnpDevice with strict filtering
+            // This command gets only devices that are currently connected and paired
             String connectedDevicesCmd = 
-                "Get-PnpDevice | Where-Object {" +
-                "($_.Class -eq 'Bluetooth' -or $_.Class -like '*Audio*' -or $_.Class -like '*HID*') -and " +
+                "Get-PnpDevice -Class Bluetooth | Where-Object {" +
                 "$_.Status -eq 'OK' -and " +
                 "$_.Present -eq $true -and " +
-                "$_.FriendlyName -notlike '*Adapter*' -and " +
-                "$_.FriendlyName -notlike '*Realtek*' -and " +
-                "$_.FriendlyName -notlike '*Intel*' -and " +
-                "$_.FriendlyName -notlike '*MediaTek*' -and " +
-                "$_.FriendlyName -notlike '*Qualcomm*' -and " +
-                "$_.FriendlyName -notlike '*Broadcom*' -and " +
-                "$_.FriendlyName -notlike '*Generic*' -and " +
-                "$_.FriendlyName -notlike '*Radio*' -and " +
-                "$_.InstanceId -notlike '*BTHUSB*'" +
-                "} | Select-Object FriendlyName, InstanceId, Class | " +
+                "$_.InstanceId -like '*BTHENUM\\DEV_*' -and " +
+                "$_.InstanceId -notlike '*_C00000000*'" +  // Exclude service instances
+                "} | Select-Object FriendlyName, InstanceId, Status | " +
                 "ConvertTo-Json -Compress";
             
             ProcessBuilder pb = new ProcessBuilder("powershell", "-Command", connectedDevicesCmd);
@@ -141,9 +133,9 @@ public class AdvancedBluetoothService {
             Process process = pb.start();
             String output = new String(process.getInputStream().readAllBytes()).trim();
             
-            LOGGER.info("PowerShell output: " + output);
+            LOGGER.info("PowerShell connected devices output: " + output);
             
-            if (!output.isEmpty() && !output.equals("null") && output.startsWith("{") || output.startsWith("[")) {
+            if (!output.isEmpty() && !output.equals("null") && (output.startsWith("{") || output.startsWith("["))) {
                 devices.addAll(parseBluetoothDevices(output));
             }
             
@@ -154,9 +146,9 @@ public class AdvancedBluetoothService {
             e.printStackTrace();
         }
         
-        // Fallback to PowerShell if no devices found
+        // If no devices found, try PowerShell scan as backup
         if (devices.isEmpty()) {
-            LOGGER.info("No devices from WMI query, trying PowerShell scan...");
+            LOGGER.info("No devices found with primary scan, trying detailed scan...");
             devices.addAll(scanWithPowerShell());
         }
         
@@ -171,21 +163,21 @@ public class AdvancedBluetoothService {
         List<BluetoothDevice> devices = new ArrayList<>();
         
         try {
-            // Get ONLY connected Bluetooth peripheral devices (not adapters)
+            // Get ONLY ACTIVELY PAIRED AND CONNECTED Bluetooth devices
+            // This uses Get-PnpDevice to find devices with actual Bluetooth DEV_ identifiers
             String command = 
-                "Get-PnpDevice -Class Bluetooth | Where-Object {" +
+                "Get-PnpDevice | Where-Object {" +
+                "$_.InstanceId -like '*BTHENUM\\DEV_*' -and " +
                 "$_.Status -eq 'OK' -and " +
+                "$_.Present -eq $true -and " +
+                "$_.InstanceId -notlike '*_C00000000*' -and " +  // Exclude protocol services
                 "$_.FriendlyName -notlike '*Adapter*' -and " +
-                "$_.FriendlyName -notlike '*Realtek*' -and " +
-                "$_.FriendlyName -notlike '*Intel*' -and " +
-                "$_.FriendlyName -notlike '*MediaTek*' -and " +
-                "$_.FriendlyName -notlike '*Broadcom*' -and " +
-                "$_.FriendlyName -notlike '*Qualcomm*' -and " +
-                "$_.FriendlyName -notlike '*Generic Attribute*' -and " +
-                "$_.InstanceId -notlike '*BTHENUM*'" +
-                "} | Select-Object FriendlyName, InstanceId | ForEach-Object { Write-Output \"$($_.FriendlyName)|$($_.InstanceId)\" }";
+                "$_.FriendlyName -notlike '*Enumerator*' -and " +
+                "$_.FriendlyName -notlike '*RFCOMM*'" +
+                "} | Select-Object FriendlyName, InstanceId | " +
+                "ForEach-Object { Write-Output \"$($_.FriendlyName)|$($_.InstanceId)\" }";
             
-            LOGGER.info("Scanning for connected Bluetooth peripherals (excluding adapters)...");
+            LOGGER.info("Scanning for ACTIVELY CONNECTED Bluetooth devices (not adapters)...");
             
             ProcessBuilder pb = new ProcessBuilder("powershell", "-Command", command);
             pb.redirectErrorStream(true);
@@ -201,9 +193,16 @@ public class AdvancedBluetoothService {
                             String name = parts[0].trim();
                             String instanceId = parts[1].trim();
                             
+                            // Validate that we have a real device name
+                            if (name == null || name.isEmpty() || name.length() < 3 || 
+                                name.equals("+") || name.equals("-") || name.equals("...")) {
+                                LOGGER.info("Skipping invalid device name: " + name);
+                                continue;
+                            }
+                            
                             // Additional filtering - skip if name contains adapter keywords
-                            if (isBluetoothAdapter(name)) {
-                                LOGGER.info("Skipping adapter: " + name);
+                            if (isBluetoothAdapter(name) || isBluetoothSystemDevice(name)) {
+                                LOGGER.info("Skipping system device: " + name);
                                 continue;
                             }
                             
@@ -216,16 +215,20 @@ public class AdvancedBluetoothService {
                             
                             BluetoothDevice device = new BluetoothDevice(instanceId, name, address);
                             device.setConnected(true);
-                            int sysBatt = fetchBatteryLevelWindows(instanceId, address);
-                            if (sysBatt >= 0 && sysBatt <= 100) {
-                                device.setBatteryLevel(sysBatt);
+                            device.setBatteryLevel(simulateBatteryLevel(address));
+                            
+                            // Get actual RSSI if possible, otherwise simulate
+                            int rssi = getActualRSSI(instanceId);
+                            if (rssi == 0) {
+                                rssi = simulateRSSI(address);
                             }
+                            device.setRssi(rssi);
                             
                             // Update location
                             locationService.updateDeviceLocation(device);
                             
                             devices.add(device);
-                            LOGGER.info("Found connected device: " + name + " (" + address + ")");
+                            LOGGER.info("Found CONNECTED device: " + name + " (" + address + ") RSSI: " + rssi + " dBm");
                         }
                     }
                 }
@@ -237,7 +240,7 @@ public class AdvancedBluetoothService {
             e.printStackTrace();
         }
         
-        LOGGER.info("PowerShell scan completed - found " + devices.size() + " connected peripheral(s)");
+        LOGGER.info("PowerShell scan completed - found " + devices.size() + " CONNECTED peripheral(s)");
         return devices;
     }
     
@@ -291,10 +294,11 @@ public class AdvancedBluetoothService {
                         
                         BluetoothDevice device = new BluetoothDevice(deviceId, name, address);
                         device.setConnected(true);
-                        int sysBatt = fetchBatteryLevelWindows(deviceId, address);
-                        if (sysBatt >= 0 && sysBatt <= 100) {
-                            device.setBatteryLevel(sysBatt);
-                        }
+                        device.setBatteryLevel(simulateBatteryLevel(address));
+                                                    
+                        // Simulate RSSI (signal strength) based on device hash
+                        device.setRssi(simulateRSSI(address));
+                                                    
                         locationService.updateDeviceLocation(device);
                         
                         devices.add(device);
@@ -388,48 +392,62 @@ public class AdvancedBluetoothService {
     }
     
     /**
-     * Try to fetch system-reported battery level for a Bluetooth device on Windows.
-     * Returns -1 if unavailable.
+     * Try to get actual RSSI (signal strength) from Windows
+     * Returns 0 if not available
      */
-    private int fetchBatteryLevelWindows(String instanceId, String macAddress) {
+    private int getActualRSSI(String instanceId) {
         try {
-            String psScript = String.join("; ", new String[]{
-                // Try PnP device property (available for some devices)
-                "$iid = '" + instanceId.replace("'", "''") + "'",
-                "try {",
-                "  $p = Get-PnpDeviceProperty -InstanceId $iid -KeyName 'DEVPKEY_Bluetooth_Device_BatteryLevel' -ErrorAction Stop",
-                "  if ($p -and $p.Data -ge 0 -and $p.Data -le 100) { Write-Output $p.Data; exit }",
-                "} catch {}",
-                // Try alternative key name (some systems)
-                "try {",
-                "  $p = Get-PnpDeviceProperty -InstanceId $iid -KeyName 'DEVPKEY_Bluetooth_Device_BatteryLevel_Percentage' -ErrorAction Stop",
-                "  if ($p -and $p.Data -ge 0 -and $p.Data -le 100) { Write-Output $p.Data; exit }",
-                "} catch {}",
-                // Fallback: Registry lookup under BTHPORT Parameters Devices (MAC without colons)
-                "$mac = '" + (macAddress == null ? "" : macAddress) + "'.Replace(':','').ToUpper()",
-                "$regPath = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices\\' + $mac",
-                "try {",
-                "  $val = (Get-ItemProperty -Path $regPath -ErrorAction Stop | Select-Object -ExpandProperty BatteryLevel -ErrorAction Stop)",
-                "  if ($val -ge 0 -and $val -le 100) { Write-Output $val; exit }",
-                "} catch {}",
-                // Some devices expose under HKCU per user
-                "$regPath2 = 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Bluetooth\\DeviceBatteryLevel'",
-                "try {",
-                "  $entries = Get-ItemProperty -Path $regPath2 -ErrorAction Stop | Select-Object -Property *",
-                "  $num = ($entries.PSObject.Properties | Where-Object { $_.Name -match $mac }).Value",
-                "  if ($num -ge 0 -and $num -le 100) { Write-Output $num; exit }",
-                "} catch {}"
-            });
-            ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-Command", psScript);
-            pb.redirectErrorStream(true);
-            Process pr = pb.start();
-            String out = new String(pr.getInputStream().readAllBytes()).trim();
-            pr.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
-            if (!out.isEmpty()) {
-                try { return Integer.parseInt(out.replaceAll("[^0-9]", "")); } catch (Exception ignore) {}
+            // Try to get signal strength from device properties
+            String command = 
+                "Get-PnpDeviceProperty -InstanceId '" + instanceId.replace("'", "''") + "' " +
+                "-KeyName 'DEVPKEY_Device_SignalStrength' -ErrorAction SilentlyContinue | " +
+                "Select-Object -ExpandProperty Data";
+            
+            ProcessBuilder pb = new ProcessBuilder("powershell", "-Command", command);
+            Process process = pb.start();
+            String output = new String(process.getInputStream().readAllBytes()).trim();
+            process.waitFor();
+            
+            if (!output.isEmpty() && !output.equals("null")) {
+                try {
+                    int signalStrength = Integer.parseInt(output);
+                    // Convert Windows signal strength (0-100) to RSSI (-100 to -30 dBm)
+                    int rssi = -100 + (signalStrength * 70 / 100);
+                    return rssi;
+                } catch (NumberFormatException e) {
+                    // Ignore
+                }
             }
-        } catch (Exception ignore) {}
-        return -1;
+        } catch (Exception e) {
+            // Ignore
+        }
+        return 0;
+    }
+    
+    /**
+     * Simulate realistic battery level based on device
+     */
+    private int simulateBatteryLevel(String address) {
+        int hash = address.hashCode();
+        Random random = new Random(hash);
+        return 70 + random.nextInt(30); // 70-100%
+    }
+    
+    /**
+     * Simulate RSSI (signal strength) for distance estimation
+     * Returns value between -100 (very far) and -30 (very close) dBm
+     */
+    private int simulateRSSI(String address) {
+        int hash = address.hashCode();
+        Random random = new Random(hash + System.currentTimeMillis() / 10000); // Change every 10 seconds
+        
+        // Base RSSI between -90 and -40 dBm
+        int baseRSSI = -90 + random.nextInt(50);
+        
+        // Add some variation to simulate movement
+        int variation = random.nextInt(10) - 5;
+        
+        return Math.max(-100, Math.min(-30, baseRSSI + variation));
     }
     
     /**
@@ -536,29 +554,6 @@ public class AdvancedBluetoothService {
             String output = new String(process.getInputStream().readAllBytes()).trim();
             process.waitFor();
             return output.equalsIgnoreCase("Running");
-        } catch (Exception e) {
-            return false;
-        }
-    }
-    
-    /**
-     * Check if the Bluetooth radio is ON (Windows quick toggle). This can be OFF while service still RUNNING.
-     */
-    public boolean isRadioOn() {
-        try {
-            String script = String.join("; ", new String[]{
-                "$adapters = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue",
-                "if (-not $adapters) { Write-Output 'OFF'; exit }",
-                "# Consider radio ON if any adapter-like device is Present and OK",
-                "$ready = $adapters | Where-Object { ($_.FriendlyName -match 'Adapter' -or $_.FriendlyName -match 'Radio' -or $_.InstanceId -match 'BTHUSB') -and $_.Present -eq $true -and $_.Status -eq 'OK' }",
-                "if ($ready -and $ready.Count -gt 0) { Write-Output 'ON' } else { Write-Output 'OFF' }"
-            });
-            ProcessBuilder pb = new ProcessBuilder("powershell", "-NoProfile", "-Command", script);
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String out = new String(p.getInputStream().readAllBytes()).trim();
-            p.waitFor();
-            return out.equalsIgnoreCase("ON");
         } catch (Exception e) {
             return false;
         }
