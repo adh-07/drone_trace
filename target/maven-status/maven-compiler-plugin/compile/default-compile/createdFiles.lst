@@ -5,6 +5,7 @@ com\mymonitor\ImprovedMonitorApp$ConsoleBridge.class
 com\mymonitor\ui\AdvancedMapView$DeviceMarker.class
 com\myproject\DroneServer.class
 com\myproject\model\TelemetryData.class
+com\mymonitor\Launcher.class
 com\mymonitor\model\BluetoothDevice.class
 com\mymonitor\SingleFileMonitorApp$1.class
 com\mymonitor\model\TelemetryData.class

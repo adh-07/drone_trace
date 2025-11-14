@@ -44,7 +44,6 @@ public class SingleFileMonitorApp extends Application {
     private Label connectionAttemptsLabel;
     private Button reconnectButton;
     private Button settingsButton;
-    private Button showMapButton;
     private TextArea logArea;
     private ScrollPane logScroll;
     private Timeline autoReconnectTimeline;
@@ -216,22 +215,14 @@ public class SingleFileMonitorApp extends Application {
         grid.add(deviceIdTitle, 0, 0);
         grid.add(deviceIdLabel, 1, 0);
         
-        // Location Row with Show Map Button
+        // Location Row
         Label locationTitle = new Label("Location:");
         locationTitle.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px; -fx-font-weight: bold;");
         locationLabel = new Label("N/A");
         locationLabel.setStyle("-fx-text-fill: #000000; -fx-font-size: 13px;");
         
-        // Show Map Button next to coordinates
-        showMapButton = new Button("🗺 Show Map");
-        showMapButton.setStyle("-fx-font-size: 11px; -fx-padding: 5 10;");
-        showMapButton.setOnAction(e -> showMapWindow());
-        
-        HBox locationBox = new HBox(10, locationLabel, showMapButton);
-        locationBox.setAlignment(Pos.CENTER_LEFT);
-        
         grid.add(locationTitle, 0, 1);
-        grid.add(locationBox, 1, 1);
+        grid.add(locationLabel, 1, 1);
         
         // Battery Row
         Label batteryTitle = new Label("Battery:");
@@ -509,11 +500,24 @@ public class SingleFileMonitorApp extends Application {
     private void startBluetoothMonitoring() {
         bluetoothService = new AdvancedBluetoothService();
         
-        // Check if Bluetooth is enabled
-        if (!bluetoothService.isBluetoothEnabled()) {
-            handleBluetoothStatus(false);
-            log("WARNING: Bluetooth is disabled. Please enable Bluetooth.");
+        // Set initial searching state
+        if (distanceMeter != null) {
+            distanceMeter.setSearching();
         }
+        
+        // Check if Bluetooth service is running
+        if (!bluetoothService.isBluetoothEnabled()) {
+            handleBluetoothDisabled();
+            return;
+        }
+        
+        // Check if Bluetooth radio is turned on
+        if (!bluetoothService.isBluetoothRadioOn()) {
+            handleBluetoothRadioOff();
+            return;
+        }
+        
+        log("Bluetooth is enabled and radio is ON - starting scan...");
         
         bluetoothService.startScanning(
             devices -> {
@@ -525,30 +529,75 @@ public class SingleFileMonitorApp extends Application {
         log("Advanced Bluetooth monitoring started - using native API with 2-second location updates");
     }
     
-    private void handleBluetoothStatus(boolean enabled) {
-        if (!enabled) {
+    private void handleBluetoothDisabled() {
+        log("WARNING: Bluetooth service is disabled. Please enable Bluetooth.");
+        
+        Platform.runLater(() -> {
             // Show alert to turn on Bluetooth
             Alert alert = new Alert(Alert.AlertType.WARNING);
-            alert.setTitle("Bluetooth Not Enabled");
-            alert.setHeaderText("Bluetooth is turned off");
-            alert.setContentText("Please turn on Bluetooth to detect and monitor devices.");
-            alert.showAndWait();
+            alert.setTitle("Bluetooth Service Disabled");
+            alert.setHeaderText("Bluetooth Service Not Running");
+            alert.setContentText("The Windows Bluetooth service is not running.\n\n" +
+                               "Please enable Bluetooth from Windows Settings:\n" +
+                               "Settings → Bluetooth & devices → Turn on Bluetooth");
             
-            // Set disconnected state
-            updateDisconnectedState();
-            log("Bluetooth is turned off - Please enable Bluetooth");
-        } else {
-            log("Bluetooth is enabled");
-        }
+            ButtonType enableButton = new ButtonType("Retry");
+            ButtonType cancelButton = new ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
+            alert.getButtonTypes().setAll(enableButton, cancelButton);
+            
+            alert.showAndWait().ifPresent(response -> {
+                if (response == enableButton) {
+                    // Retry Bluetooth initialization
+                    log("Retrying Bluetooth initialization...");
+                    startBluetoothMonitoring();
+                } else {
+                    updateDisconnectedState();
+                }
+            });
+        });
+        
+        updateDisconnectedState();
+    }
+    
+    private void handleBluetoothRadioOff() {
+        log("WARNING: Bluetooth radio is turned OFF. Please turn on Bluetooth.");
+        
+        Platform.runLater(() -> {
+            // Show alert to turn on Bluetooth
+            Alert alert = new Alert(Alert.AlertType.WARNING);
+            alert.setTitle("Bluetooth Radio Off");
+            alert.setHeaderText("Please Turn On Bluetooth");
+            alert.setContentText("Bluetooth is currently turned off.\n\n" +
+                               "To enable Bluetooth device monitoring:\n" +
+                               "1. Click the Bluetooth icon in the system tray\n" +
+                               "2. Turn ON Bluetooth\n" +
+                               "3. Click 'Retry' below to start monitoring");
+            
+            ButtonType enableButton = new ButtonType("Retry");
+            ButtonType cancelButton = new ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
+            alert.getButtonTypes().setAll(enableButton, cancelButton);
+            
+            alert.showAndWait().ifPresent(response -> {
+                if (response == enableButton) {
+                    // Retry Bluetooth initialization
+                    log("Retrying Bluetooth initialization...");
+                    startBluetoothMonitoring();
+                } else {
+                    updateDisconnectedState();
+                }
+            });
+        });
+        
+        updateDisconnectedState();
     }
     
     private void updateDisconnectedState() {
-        deviceIdLabel.setText("Disconnected");
+        deviceIdLabel.setText("No Device Connected");
         locationLabel.setText("N/A");
         batteryBar.setProgress(0.0);
-        batteryPercentLabel.setText("0%");
+        batteryPercentLabel.setText("--");
         batteryBar.setStyle("-fx-accent: #666666;");
-        updateStatus(false, "Bluetooth Disconnected");
+        updateStatus(false, "Bluetooth ON - No Device");
         lastUpdateLabel.setText(LocalDateTime.now().format(TIME_FORMATTER));
         
         if (distanceMeter != null) {
@@ -568,28 +617,47 @@ public class SingleFileMonitorApp extends Application {
             return;
         }
         
-        // Log all devices received
-        for (BluetoothDevice device : devices) {
-            log("Device in callback: " + device.getDeviceName() + " | Battery: " + 
+        // Filter out only TRULY connected devices with valid names
+        List<BluetoothDevice> validDevices = devices.stream()
+            .filter(d -> d.isConnected() && 
+                        d.getDeviceName() != null && 
+                        d.getDeviceName().length() > 3 &&
+                        !d.getDeviceName().startsWith("+") &&
+                        !d.getDeviceName().contains("+ ...") &&
+                        !d.getDeviceName().equals("..."))
+            .toList();
+        
+        if (validDevices.isEmpty()) {
+            log("No valid connected devices found (filtering out invalid names)");
+            if (currentBluetoothDevice != null) {
+                log("Bluetooth device disconnected");
+                currentBluetoothDevice = null;
+            }
+            updateDisconnectedState();
+            return;
+        }
+        
+        // Log all valid devices received
+        for (BluetoothDevice device : validDevices) {
+            log("Valid device: " + device.getDeviceName() + " | Battery: " + 
                 device.getBatteryLevel() + "% | Connected: " + device.isConnected() + 
-                " | Location: " + device.getLatitude() + ", " + device.getLongitude());
+                " | RSSI: " + device.getRssi() + " dBm | Location: " + 
+                device.getLatitude() + ", " + device.getLongitude());
         }
 
-        // Update map with ALL connected devices
+        // Update map with ALL valid connected devices
         if (mapView != null) {
-            mapView.updateBluetoothDevices(devices);
-            log("Updated map with " + devices.size() + " Bluetooth device(s)");
+            mapView.updateBluetoothDevices(validDevices);
+            log("Updated map with " + validDevices.size() + " Bluetooth device(s)");
         }
 
-        // Find the first connected Bluetooth device (prioritize devices with "drone" in name)
-        BluetoothDevice selectedDevice = devices.stream()
-            .filter(BluetoothDevice::isConnected)
+        // Find the first valid connected Bluetooth device
+        BluetoothDevice selectedDevice = validDevices.stream()
             .filter(d -> d.getDeviceName().toLowerCase().contains("drone") || 
                         d.getDeviceName().toLowerCase().contains("quadcopter") ||
                         d.getDeviceName().toLowerCase().contains("uav"))
             .findFirst()
-            .orElse(devices.stream()
-                .filter(BluetoothDevice::isConnected)
+            .orElse(validDevices.stream()
                 .findFirst()
                 .orElse(null));
         
@@ -608,17 +676,27 @@ public class SingleFileMonitorApp extends Application {
 
             Platform.runLater(() -> {
                 log("Updating UI with device: " + selectedDevice.getDeviceName());
-                deviceIdLabel.setText(selectedDevice.getDeviceName());
+                deviceIdLabel.setText(selectedDevice.getDeviceName() + " [CONNECTED]");
                 
                 // Update distance meter based on signal strength
                 int rssi = selectedDevice.getRssi();
+                String proximityText = "Unknown";
                 if (rssi != 0) {
                     distanceMeter.updateBySignalStrength(rssi);
-                    log("Signal strength: " + rssi + " dBm");
+                    
+                    // Determine proximity based on RSSI
+                    if (rssi >= -30) proximityText = "Very Close";
+                    else if (rssi >= -50) proximityText = "Close";
+                    else if (rssi >= -70) proximityText = "Medium Distance";
+                    else if (rssi >= -85) proximityText = "Far";
+                    else proximityText = "Very Far";
+                    
+                    log("Signal strength: " + rssi + " dBm (" + proximityText + ")");
                 } else {
                     // Simulate distance based on battery as fallback
                     double simulatedDistance = 50 + (Math.random() * 30 - 15); // 35-65%
                     distanceMeter.updateDistance(simulatedDistance);
+                    proximityText = "Proximity Unknown";
                 }
                 
                 double lat = selectedDevice.getLatitude();
@@ -647,8 +725,8 @@ public class SingleFileMonitorApp extends Application {
                 }
                 
                 lastUpdateLabel.setText(LocalDateTime.now().format(TIME_FORMATTER));
-                updateStatus(true, "Connected via Bluetooth");
-                log("UI update completed");
+                updateStatus(true, "Connected - " + proximityText);
+                log("UI update completed - Device: " + selectedDevice.getDeviceName() + ", Battery: " + battery + "%, Distance: " + proximityText);
             });
 
             try {

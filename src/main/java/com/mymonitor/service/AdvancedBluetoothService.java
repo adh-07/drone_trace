@@ -193,10 +193,13 @@ public class AdvancedBluetoothService {
                             String name = parts[0].trim();
                             String instanceId = parts[1].trim();
                             
-                            // Validate that we have a real device name
-                            if (name == null || name.isEmpty() || name.length() < 3 || 
-                                name.equals("+") || name.equals("-") || name.equals("...")) {
-                                LOGGER.info("Skipping invalid device name: " + name);
+                            // Validate that we have a REAL device name (not PowerShell artifacts)
+                            if (name == null || name.isEmpty() || name.length() < 4 || 
+                                name.equals("+") || name.equals("-") || name.equals("...") ||
+                                name.startsWith("+") || name.startsWith("-") ||
+                                name.contains("+ ...") || name.contains("...") ||
+                                !name.matches(".*[a-zA-Z0-9]{2,}.*")) {  // Must contain at least 2 alphanumeric chars
+                                LOGGER.info("Skipping invalid/incomplete device name: '" + name + "'");
                                 continue;
                             }
                             
@@ -491,6 +494,13 @@ public class AdvancedBluetoothService {
     private void updateDeviceCache(List<BluetoothDevice> newDevices) {
         long currentTime = System.currentTimeMillis();
         
+        // If no new valid devices found, mark all as disconnected
+        if (newDevices.isEmpty()) {
+            LOGGER.info("No valid devices detected - marking all as disconnected");
+            deviceCache.values().forEach(d -> d.setConnected(false));
+            return;
+        }
+        
         // Mark all as disconnected first
         deviceCache.values().forEach(d -> d.setConnected(false));
         
@@ -504,6 +514,7 @@ public class AdvancedBluetoothService {
                 cached.setConnected(true);
                 cached.setDeviceName(device.getDeviceName());
                 cached.setBatteryLevel(device.getBatteryLevel());
+                cached.setRssi(device.getRssi());
                 cached.setLatitude(device.getLatitude());
                 cached.setLongitude(device.getLongitude());
                 cached.setLastSeen(java.time.Instant.now());
@@ -553,8 +564,36 @@ public class AdvancedBluetoothService {
             Process process = pb.start();
             String output = new String(process.getInputStream().readAllBytes()).trim();
             process.waitFor();
-            return output.equalsIgnoreCase("Running");
+            boolean enabled = output.equalsIgnoreCase("Running");
+            LOGGER.info("Bluetooth service status: " + output + " (Enabled: " + enabled + ")");
+            return enabled;
         } catch (Exception e) {
+            LOGGER.warning("Failed to check Bluetooth status: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Check if Bluetooth hardware radio is enabled
+     */
+    public boolean isBluetoothRadioOn() {
+        try {
+            String command = 
+                "Get-PnpDevice -Class Bluetooth | Where-Object {" +
+                "$_.FriendlyName -like '*Bluetooth*' -and " +
+                "($_.FriendlyName -like '*Adapter*' -or $_.FriendlyName -like '*Radio*')" +
+                "} | Select-Object -First 1 -ExpandProperty Status";
+            
+            ProcessBuilder pb = new ProcessBuilder("powershell", "-Command", command);
+            Process process = pb.start();
+            String output = new String(process.getInputStream().readAllBytes()).trim();
+            process.waitFor();
+            
+            boolean radioOn = output.equalsIgnoreCase("OK");
+            LOGGER.info("Bluetooth radio status: " + output + " (Radio On: " + radioOn + ")");
+            return radioOn;
+        } catch (Exception e) {
+            LOGGER.warning("Failed to check Bluetooth radio: " + e.getMessage());
             return false;
         }
     }

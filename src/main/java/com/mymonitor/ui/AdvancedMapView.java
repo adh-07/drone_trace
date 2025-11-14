@@ -232,85 +232,108 @@ public class AdvancedMapView extends BorderPane {
     }
     
     /**
-     * Generate Leaflet (raster tiles) HTML to avoid WebGL requirements in JavaFX WebView
+     * Generate Mapbox GL JS HTML
      */
     private String generateMapboxHTML(double centerLat, double centerLon, int zoom) {
-        String htmlTemplate = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <meta charset='utf-8'>
-              <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-              <title>Advanced Device Tracking</title>
-              <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
-              <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-              <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                html, body { height: 100%; width: 100%; overflow: hidden; }
-                #map { position: absolute; top: 0; bottom: 0; width: 100%; }
-                .marker { width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-                .marker-green { background-color: #10b981; }
-                .marker-orange { background-color: #f59e0b; }
-                .marker-red { background-color: #ef4444; }
-                .marker-gray { background-color: #6b7280; }
-                .leaflet-popup-content { margin: 8px 12px; }
-              </style>
-            </head>
-            <body>
-              <div id='map'></div>
-              <script>
-                console.log('Leaflet map initializing');
-                window.map = L.map('map').setView([__LAT__, __LON__], __ZOOM__);
-                L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                  maxZoom: 19,
-                  attribution: 'Tiles &copy; Esri, i-cubed, USDA, USGS, AEX, GeoEye, and the GIS User Community'
-                }).addTo(window.map);
-                const markers = {};
-                function getMarkerColor(battery, connected) {
-                  if (!connected) return 'marker-gray';
-                  if (battery < 20) return 'marker-red';
-                  if (battery < 50) return 'marker-orange';
-                  return 'marker-green';
-                }
-                window.updateDeviceMarker = function(id, lat, lon, name, battery, connected) {
-                  const popupHtml = `
-                    <h3 style="margin:0 0 5px;font-size:14px;">${name}</h3>
-                    <div style="font-size:12px;color:#666;">
-                      Battery: ${battery}%<br>
-                      Status: ${connected ? 'Connected' : 'Disconnected'}<br>
-                      Lat: ${lat.toFixed(6)}<br>
-                      Lon: ${lon.toFixed(6)}
-                    </div>`;
-                  if (markers[id]) {
-                    markers[id].setLatLng([lat, lon]);
-                    markers[id].getElement().className = 'marker ' + getMarkerColor(battery, connected);
-                    markers[id].bindPopup(popupHtml);
-                  } else {
-                    const el = document.createElement('div');
-                    el.className = 'marker ' + getMarkerColor(battery, connected);
-                    const icon = L.divIcon({ className: '', html: el, iconSize: [20, 20] });
-                    const marker = L.marker([lat, lon], { icon: icon, title: name }).addTo(window.map).bindPopup(popupHtml);
-                    markers[id] = marker;
-                  }
-                };
-                window.updateAllMarkers = function(devices) {
-                  devices.forEach(dev => {
-                    window.updateDeviceMarker(dev.id, dev.lat, dev.lon, dev.name, dev.battery, dev.connected);
-                  });
-                };
-                window.clearMarkers = function() {
-                  Object.keys(markers).forEach(id => { window.map.removeLayer(markers[id]); });
-                  for (const k in markers) delete markers[k];
-                };
-                console.log('Leaflet map ready');
-              </script>
-            </body>
-            </html>
-            """;
-        return htmlTemplate
-            .replace("__LAT__", Double.toString(centerLat))
-            .replace("__LON__", Double.toString(centerLon))
-            .replace("__ZOOM__", Integer.toString(zoom));
+        StringBuilder html = new StringBuilder();
+        
+        html.append("<!DOCTYPE html><html><head>");
+        html.append("<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>");
+        html.append("<title>Advanced Device Tracking</title>");
+        
+        // Mapbox GL JS
+        html.append("<script src='https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js'></script>");
+        html.append("<link href='https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css' rel='stylesheet' />");
+        
+        html.append("<style>");
+        html.append("* { margin: 0; padding: 0; box-sizing: border-box; }");
+        html.append("html, body { height: 100%; width: 100%; overflow: hidden; }");
+        html.append("#map { position: absolute; top: 0; bottom: 0; width: 100%; }");
+        html.append(".marker { background-size: cover; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }");
+        html.append(".marker-green { background-color: #10b981; }");
+        html.append(".marker-orange { background-color: #f59e0b; }");
+        html.append(".marker-red { background-color: #ef4444; }");
+        html.append(".marker-gray { background-color: #6b7280; }");
+        html.append(".mapboxgl-popup { max-width: 200px; font-family: Arial, sans-serif; }");
+        html.append(".mapboxgl-popup-content { padding: 10px; }");
+        html.append("</style></head><body>");
+        html.append("<div id='map'></div>");
+        
+        html.append("<script>");
+        html.append("mapboxgl.accessToken = '" + MAPBOX_TOKEN + "';");
+        
+        html.append("const map = new mapboxgl.Map({");
+        html.append("  container: 'map',");
+        html.append("  style: 'mapbox://styles/mapbox/satellite-streets-v12',");
+        html.append("  center: [" + centerLon + ", " + centerLat + "],");
+        html.append("  zoom: " + zoom);
+        html.append("});");
+        
+        html.append("map.addControl(new mapboxgl.NavigationControl());");
+        html.append("map.addControl(new mapboxgl.FullscreenControl());");
+        
+        html.append("console.log('Mapbox map initialized');");
+        html.append("map.on('load', function() { console.log('Mapbox map loaded'); });");
+        html.append("map.on('error', function(e) { console.error('Mapbox error:', e); });");
+        
+        html.append("const markers = {};");
+        
+        html.append("function getMarkerColor(battery, connected) {");
+        html.append("  if (!connected) return 'marker-gray';");
+        html.append("  if (battery < 20) return 'marker-red';");
+        html.append("  if (battery < 50) return 'marker-orange';");
+        html.append("  return 'marker-green';");
+        html.append("}");
+        
+        html.append("window.updateDeviceMarker = function(id, lat, lon, name, battery, connected) {");
+        html.append("  if (markers[id]) {");
+        html.append("    markers[id].marker.setLngLat([lon, lat]);");
+        html.append("    markers[id].element.className = 'marker ' + getMarkerColor(battery, connected);");
+        html.append("    markers[id].popup.setHTML(");
+        html.append("      '<h3 style=\"margin:0 0 5px;font-size:14px;\">' + name + '</h3>' +");
+        html.append("      '<div style=\"font-size:12px;color:#666;\">' +");
+        html.append("      'Battery: ' + battery + '%<br>' +");
+        html.append("      'Status: ' + (connected ? 'Connected' : 'Disconnected') + '<br>' +");
+        html.append("      'Lat: ' + lat.toFixed(6) + '<br>' +");
+        html.append("      'Lon: ' + lon.toFixed(6) +");
+        html.append("      '</div>'");
+        html.append("    );");
+        html.append("  } else {");
+        html.append("    const el = document.createElement('div');");
+        html.append("    el.className = 'marker ' + getMarkerColor(battery, connected);");
+        html.append("    const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(");
+        html.append("      '<h3 style=\"margin:0 0 5px;font-size:14px;\">' + name + '</h3>' +");
+        html.append("      '<div style=\"font-size:12px;color:#666;\">' +");
+        html.append("      'Battery: ' + battery + '%<br>' +");
+        html.append("      'Status: ' + (connected ? 'Connected' : 'Disconnected') + '<br>' +");
+        html.append("      'Lat: ' + lat.toFixed(6) + '<br>' +");
+        html.append("      'Lon: ' + lon.toFixed(6) +");
+        html.append("      '</div>'");
+        html.append("    );");
+        html.append("    const marker = new mapboxgl.Marker(el)");
+        html.append("      .setLngLat([lon, lat])");
+        html.append("      .setPopup(popup)");
+        html.append("      .addTo(map);");
+        html.append("    markers[id] = { marker: marker, element: el, popup: popup };");
+        html.append("  }");
+        html.append("};");
+        
+        html.append("window.updateAllMarkers = function(devices) {");
+        html.append("  devices.forEach(dev => {");
+        html.append("    window.updateDeviceMarker(dev.id, dev.lat, dev.lon, dev.name, dev.battery, dev.connected);");
+        html.append("  });");
+        html.append("};");
+        
+        html.append("window.clearMarkers = function() {");
+        html.append("  Object.keys(markers).forEach(id => {");
+        html.append("    markers[id].marker.remove();");
+        html.append("  });");
+        html.append("  markers = {};");
+        html.append("};");
+        
+        html.append("</script></body></html>");
+        
+        return html.toString();
     }
     
     /**
@@ -389,7 +412,7 @@ public class AdvancedMapView extends BorderPane {
             webView.resize(getWidth(), getHeight());
             Platform.runLater(() -> {
                 try {
-                    webView.getEngine().executeScript("if (window.map && window.map.invalidateSize) { window.map.invalidateSize(); }");
+                    webView.getEngine().executeScript("if (window.map) { window.map.resize(); }");
                 } catch (Exception e) {
                     // Ignore
                 }
